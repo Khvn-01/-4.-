@@ -1,9 +1,22 @@
-{
-  "devices": [
-    {"name": "Router-R1", "ip": "8.8.8.8"},
-    {"name": "Switch-SW1", "ip": "1.1.1.1"},
-    {"name": "Firewall-FW1", "ip": "208.67.222.222"},
-    {"name": "Access-Point-DNS", "ip": "77.88.8.8"},
-    {"name": "Broken-Server", "ip": "192.168.1.255"}
-  ]
-}
+[
+    {
+        "name": "Router-R1",
+        "ip": "8.8.8.8"
+    },
+    {
+        "name": "Access-Point-DNS",
+        "ip": "77.88.8.8"
+    },
+    {
+        "name": "Switch-Core",
+        "ip": "1.1.1.1"
+    },
+    {
+        "name": "Local-Host",
+        "ip": "127.0.0.1"
+    },
+    {
+        "name": "Broken-Server",
+        "ip": "1.2.3.4"
+    }
+]
