@@ -1,34 +1,31 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Система мониторинга доступности сетевых устройств
-Network Alert System - автоматическая проверка доступности по ping
-"""
-
 import json
 import time
 import subprocess
 import requests
 import logging
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
-import sys
 
-# ============ НАСТРОЙКИ ============
-# Telegram параметры (переменные окружения или конфиг)
-TOKEN = "YOUR_BOT_TOKEN"           # Получить от @BotFather
-CHAT_ID = "YOUR_CHAT_ID"           # Получить от @userinfobot
+# config
+TOKEN = "8531136869:AAEc20dsQo8jJZ1CYmIBLCilBoI16sLQ9TM"
+CHAT_ID = "1213695468"
 
-CHECK_INTERVAL = 300               # 5 минут между проверками
-LOG_FILE = "alerts.log"
+CHECK_INTERVAL = 300  
+# Файл для сохранения логов
+LOG_FILE = "alerts.txt"
 CONFIG_FILE = "devices.json"
 
-# Хранилище статуса устройств
-device_status = {}                 # Для отслеживания смены статуса
+device_status = {}
 
-# ============ ЛОГИРОВАНИЕ ============
+GREEN = '\033[92m'
+RED = '\033[91m'
+YELLOW = '\033[93m'
+RESET = '\033[0m'
+
+# loggin
 def setup_logging():
-    """Настройка логирования в файл и консоль"""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -37,231 +34,146 @@ def setup_logging():
             logging.StreamHandler(sys.stdout)
         ]
     )
+    
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
     return logging.getLogger(__name__)
 
 logger = setup_logging()
 
-# ============ ВАЛИДАЦИЯ КОНФИГУРАЦИИ ============
-def validate_telegram_config():
-    """
-    Валидация конфигурации Telegram
-    
-    Returns:
-        tuple: (is_valid: bool, error_message: str)
-    """
-    # Проверка TOKEN
-    if not TOKEN or TOKEN == "YOUR_BOT_TOKEN" or len(TOKEN.strip()) < 10:
-        return False, "❌ TOKEN не настроен или некорректен. Укажите валидный токен."
-    
-    # Проверка CHAT_ID
-    if not CHAT_ID or CHAT_ID == "YOUR_CHAT_ID" or len(str(CHAT_ID).strip()) == 0:
-        return False, "❌ CHAT_ID не настроен. Укажите ID чата."
-    
-    # Проверка формата TOKEN (должен быть формата: числа:строка)
-    if ':' not in TOKEN:
-        return False, "❌ Неверный формат TOKEN. Ожидается: <bot_id>:<token>"
-    
-    return True, "✅ Конфигурация Telegram валидна"
-
-# ============ TELEGRAM ============
+# tgc
 def send_telegram(message):
-    """
-    Отправка сообщения в Telegram
-    
-    Args:
-        message (str): Текст сообщения
-    
-    Returns:
-        bool: True если отправлено успешно, False иначе
-    """
-    is_valid, error_msg = validate_telegram_config()
-    if not is_valid:
-        if not hasattr(send_telegram, '_warned'):
-            logger.warning(error_msg)
-            send_telegram._warned = True
-        return False
-    
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": message}
-        response = requests.post(url, data=data, timeout=5)
-        
-        if response.status_code == 200:
-            return True
-        else:
-            logger.error(f"Ошибка Telegram API: {response.status_code}")
-            return False
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка отправки в Telegram: {e}")
-        return False
+        data = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
+        requests.post(url, data=data, timeout=5)
+        return True
     except Exception as e:
-        logger.error(f"Неизвестная ошибка при отправке: {e}")
+        logger.error(f"Ошибка Telegram: {e}")
         return False
 
-# ============ PING ============
-def ping(ip, count=1, timeout=2):
-    """
-    Проверка доступности хоста по ping
+# multichannel
+def ping_worker(device, results):
+    name = device.get('name', 'Неизвестно')
+    ip = device.get('ip')
     
-    Args:
-        ip (str): IP-адрес для проверки
-        count (int): Количество пакетов
-        timeout (int): Таймаут в секундах
+    param = '-n' if sys.platform.startswith('win') else '-c'
+    timeout_param = '-w' if sys.platform.startswith('win') else '-W'
+    timeout_val = '1000' if sys.platform.startswith('win') else '1'
     
-    Returns:
-        bool: True если хост доступен, False иначе
-    """
-    try:
-        # Для Windows используем: ping -n <count> -w <timeout*1000> <ip>
-        # Для Linux/Mac используем: ping -c <count> -W <timeout*1000> <ip>
-        
-        if sys.platform.startswith('win'):
-            # Windows
-            cmd = ['ping', '-n', str(count), '-w', str(timeout * 1000), ip]
-        else:
-            # Linux/Mac
-            cmd = ['ping', '-c', str(count), '-W', str(timeout * 1000), ip]
-        
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout + 1
-        )
-        return result.returncode == 0
+    cmd = ['ping', param, '1', timeout_param, timeout_val, ip]
     
-    except subprocess.TimeoutExpired:
-        return False
-    except Exception as e:
-        logger.error(f"Ошибка ping для {ip}: {e}")
-        return False
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    is_reachable = (res.returncode == 0)
+    
+    results.append({
+        "name": name,
+        "ip": ip,
+        "status": is_reachable
+    })
 
-# ============ ЗАГРУЗКА КОНФИГУРАЦИИ ============
+def countdown_timer(seconds):
+    for i in range(seconds, 0, -1):
+        sys.stdout.write(f"\r⏳ До следующей проверки: {i} сек...   ")
+        sys.stdout.flush()
+        time.sleep(1)
+    sys.stdout.write("\r🚀 Запуск проверки...                       \n")
+
+# Main
+def run_cycle(devices):
+    session_time = datetime.now().strftime('%H:%M:%S')
+    print(f"\n{YELLOW}--- Сессия мониторинга: {session_time} ---{RESET}")
+    
+    # Делаем отметку в файле о начале новой сессии
+    logger.info(f"--- Запуск сессии проверки сети ---")
+    
+    threads = []
+    results = []
+
+    for dev in devices:
+        t = threading.Thread(target=ping_worker, args=(dev, results))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    for res in results:
+        name, ip, is_up = res['name'], res['ip'], res['status']
+        
+        prev = device_status.get(name)
+        device_status[name] = is_up
+
+        color = GREEN if is_up else RED
+        status_text = "В СЕТИ " if is_up else "ОШИБКА "
+        
+        # Вывод на экран с цветом
+        print(f"[{color}{status_text}{RESET}] {name:20} | {ip}")
+        
+        # log history
+        logger.info(f"Статус узла: {name} ({ip}) - {status_text.strip()}")
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # notification
+        if prev != is_up:
+            if not is_up:
+                msg = (
+                    f"<b>Сетевое устройство недоступно</b>\n\n"
+                    f"Устройство: {name}\n"
+                    f"IP-адрес: {ip}\n"
+                    f"Время: {current_time}\n"
+                    f"Статус: ❌ НЕДОСТУПНО"
+                )
+                send_telegram(msg)
+                logger.warning(f"ОТПРАВЛЕН АЛЕРТ: {name} упал!")
+
+            elif is_up and prev is False:
+                msg = (
+                    f"<b>Сетевое устройство доступно (Восстановление)</b>\n\n"
+                    f"Устройство: {name}\n"
+                    f"IP-адрес: {ip}\n"
+                    f"Время: {current_time}\n"
+                    f"Статус: ✅ ДОСТУПНО"
+                )
+                send_telegram(msg)
+                logger.info(f"ОТПРАВЛЕН АЛЕРТ: {name} восстановлен!")
+
 def load_devices():
-    """
-    Загрузка списка устройств из JSON файла
-    
-    Returns:
-        list: Список словарей с устройствами
-    """
     try:
-        config_path = Path(CONFIG_FILE)
-        
-        if not config_path.exists():
-            logger.error(f"Файл конфигурации {CONFIG_FILE} не найден!")
-            return []
-        
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-            devices = config.get('devices', [])
-            
-            if not devices:
-                logger.warning("Список устройств пуст!")
-            
-            return devices
-    
-    except json.JSONDecodeError as e:
-        logger.error(f"Ошибка парсинга JSON: {e}")
-        return []
+        if not Path(CONFIG_FILE).exists():
+            example = [
+                {"name": "Router-R1", "ip": "8.8.8.8"},
+                {"name": "Broken-Server", "ip": "192.168.1.255"}
+            ]
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(example, f, indent=4, ensure_ascii=False)
+            return example
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception as e:
-        logger.error(f"Ошибка загрузки конфигурации: {e}")
+        logger.error(f"Ошибка чтения JSON: {e}")
         return []
-
-# ============ ОСНОВНОЙ ЦИКЛ ============
-def check_devices(devices):
-    """
-    Проверка доступности всех устройств
-    
-    Args:
-        devices (list): Список устройств для проверки
-    """
-    logger.info("=" * 60)
-    logger.info(f"Проверка доступности {len(devices)} устройств")
-    logger.info("=" * 60)
-    
-    for device in devices:
-        name = device.get('name', 'Unknown')
-        ip = device.get('ip')
-        
-        if not ip:
-            logger.warning(f"Устройство '{name}' не имеет IP-адреса!")
-            continue
-        
-        # Проверка ping
-        is_reachable = ping(ip)
-        
-        # Проверка изменения статуса
-        previous_status = device_status.get(ip)
-        device_status[ip] = is_reachable
-        
-        if is_reachable:
-            msg = f"✅ {name} ({ip}) доступен"
-            print(msg)
-            logger.info(msg)
-            
-            # Отправляем уведомление о восстановлении если статус изменился
-            if previous_status is False:  # Было недоступно, теперь доступно
-                detailed_msg = f"🟢 Сетевое устройство восстановлено\n\n"
-                detailed_msg += f"Устройство: {name}\n"
-                detailed_msg += f"IP-адрес: {ip}\n"
-                detailed_msg += f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                detailed_msg += f"Статус: ✅ ДОСТУПНО"
-                
-                if send_telegram(detailed_msg):
-                    logger.info(f"📱 Уведомление о восстановлении отправлено в Telegram для {name}")
-        else:
-            # Устройство недоступно
-            msg = f"⚠️  ALERT: {name} ({ip}) НЕДОСТУПЕН!"
-            print(msg)
-            logger.warning(msg)
-            
-            # Отправляем алерт только если статус изменился
-            if previous_status is None or previous_status:
-                detailed_msg = f"🔴 Сетевое устройство недоступно\n\n"
-                detailed_msg += f"Устройство: {name}\n"
-                detailed_msg += f"IP-адрес: {ip}\n"
-                detailed_msg += f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                detailed_msg += f"Статус: ❌ НЕДОСТУПНО"
-                
-                if send_telegram(detailed_msg):
-                    logger.info(f"📱 Уведомление отправлено в Telegram для {name}")
-    
-    logger.info("=" * 60 + "\n")
 
 def main():
-    """Главная функция"""
-    # Валидация конфигурации при запуске
-    is_valid, config_msg = validate_telegram_config()
-    if not is_valid:
-        logger.warning(config_msg)
-        logger.warning("⚠️  Уведомления в Telegram будут отключены!")
-    else:
-        logger.info(config_msg)
-    
-    devices = load_devices()
-    
-    if not devices:
-        logger.error("Невозможно продолжить: нет устройств для мониторинга!")
-        return
-    
-    logger.info(f"✨ Запуск системы мониторинга доступности сети")
-    logger.info(f"📋 Загружено устройств: {len(devices)}")
-    logger.info(f"⏰ Интервал проверки: {CHECK_INTERVAL} секунд ({CHECK_INTERVAL // 60} минут)")
-    logger.info(f"📁 Лог-файл: {LOG_FILE}")
-    
+    if sys.platform.startswith('win'):
+        import os
+        os.system('chcp 65001 > nul')
+
     try:
-        check_devices(devices)  # Первая проверка сразу
+        print(f"{GREEN}✨ Система мониторинга запущена!{RESET}")
+        
+        # Записываем старт в текстовый файл
+        logger.info("Скрипт успешно запущен. Начинаем мониторинг устройств.")
         
         while True:
-            logger.info(f"⏳ Ожидание {CHECK_INTERVAL} секунд до следующей проверки...")
-            time.sleep(CHECK_INTERVAL)
-            check_devices(devices)
-    
+            devices = load_devices()
+            if devices:
+                run_cycle(devices)
+            countdown_timer(CHECK_INTERVAL)
+            
     except KeyboardInterrupt:
-        logger.info("\n🛑 Мониторинг остановлен пользователем (Ctrl+C)")
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
-        raise
+        print(f"\n{YELLOW}🛑 Мониторинг остановлен.{RESET}")
+        logger.info("Скрипт остановлен пользователем (Ctrl+C).")
 
 if __name__ == "__main__":
     main()
