@@ -236,4 +236,4 @@ pip install requests
 
 **Version:** 1.0  
 **Last Update:** 2025-02-09  
-**Authors:** Students in the “Network Automation” course — Marchenko Danil & СЕБЯ ВПИШИ
+**Authors:** Students in the “Network Automation” course — Marchenko Danil & Khan Sergey
