@@ -1,0 +1,33 @@
+# Ignore logs
+*.log
+*.tmp
+*~
+
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Ignore virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Ignore IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~.nib
+.DS_Store
+
+# Ignore credentials
+.env
+credentials.json
+config.local.json
+
+# Ignore OS files
+Thumbs.db
+.DS_Store
